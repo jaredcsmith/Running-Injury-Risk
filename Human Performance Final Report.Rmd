@@ -1,0 +1,433 @@
+---
+title: "Human Performance Final Report"
+author: "Jared Smith"
+date: "2023-05-07"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(ggdark)
+library(plotly)
+library(ggpubr)
+library(xgboost)
+library(MASS)
+library(caret)
+library(corrplot)
+library(ggExtra) # Load ggExtra
+library(xgboost) # Load XGBoost
+source("a_insights_shap_functions.r") # Load SHAP functions
+library(Metrics) # Load metrics
+library(pROC) # Load proc 
+day <- read_csv("day_approach_maskedID_timeseries.csv")
+week <- read_csv("week_approach_maskedID_timeseries.csv")
+# Remove rows with missing or invalid values in injury column
+week <- week[complete.cases(week$injury), ]
+```
+```{r}
+summary(week)
+```
+
+
+```{r}
+
+noninjured <-week[week$injury == 0,]
+summary(noninjured)
+injured <- week[week$injury == 1, ]
+summary(injured)
+injured$injury = (as.factor(injured$injury))
+levels(injured$injury) <- c("Injured")
+
+noninjured$injury = (as.factor(noninjured$injury))
+levels(noninjured$injury) <- c("NotInjured")
+
+```
+
+
+```{r}
+injury_dist <- week %>%
+  group_by(`Athlete ID`, injury) %>%
+  summarise(count = n()) %>%
+  spread(injury, count, fill = 0) 
+injury_dist
+colnames(injury_dist) <- c("Athlete ID", "Not Injured", "Injured")
+
+#p <- ggplot(injury_dist, aes(x=`Athlete ID`, fill=Injured))+ # Set dataset and aesthetics
+#  geom_density(alpha = 0.3, fill='red3') 
+#p
+```
+```{r}
+injury_sum <- week %>%
+  subset(week$injury==1,) 
+injury_sum <- injury_sum %>%
+  group_by(`Athlete ID`, injury) %>%
+  mutate(Freq = n()) 
+injury_sum
+
+ggplot(injury_sum, aes(x=`Athlete ID`, fill=Freq))+
+  geom_bar()
+```
+
+
+```{r}
+# Create plot
+p <- ggplot(injury_sum, aes(x = `max exertion`, fill = injury)) + # Set dataset and aesthetics
+  geom_density(alpha = 0.3, fill='red3') + 
+  labs(x = "Max Exertion", y = "Injuries", # Set labels for plot 
+       title = "Injuries by Max Exertion") +
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  dark_theme_bw() # Turn theme to dark mode
+
+p1 <- ggplot(injury_sum, aes(x = `avg recovery`, fill = injury)) + # Set dataset and aesthetics
+  geom_density(alpha = 0.3, fill ="blue2") + 
+  labs(x = "Average Recovery", y = "Injuries", # Set labels for plot 
+       title = "Injuries by Average Recovery") +
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  dark_theme_bw() # Turn theme to dark mode
+
+p <- ggarrange(p, p1, ncol = 2, widths = c(3,3), common.legend = TRUE, legend = "bottom")
+print(p)
+```
+
+For Weeks that an Athlete was Injured this was their average exertion
+```{r}
+# Create a ggplot boxplot
+p <- ggplot(week, aes(x = injury, y = `avg exertion`, fill=injury)) +
+  geom_boxplot() 
+p
+# Create an interactive plotly version of the ggplot
+ggplotly(p) %>%
+  layout(
+    title = "Boxplot of Average Exertion by Injury Status",
+    xaxis = list(title = "Injury Status"),
+    yaxis = list(title = "Average Exertion")
+  )
+```
+
+
+```{r}
+p <- week %>%
+  ggplot(aes(x = Date)) +
+  geom_density(aes( fill = injury), alpha = 0.3) +
+  scale_fill_manual(values = c("red2", "green")) +
+  labs(title = "Bar Chart and Density Plot of Average Exertion by Injury Status",
+       x = "Date", y = "Density", fill = "Injury Status")
+p
+```
+
+
+```{r}
+summary(week)
+# distance sum over 3 weeks 
+# week 0-2 (Distance in week 0 and the average across 1 and 2)
+```
+
+
+
+
+```{r}
+ac_7_21 <- week$`total kms`/((week$`total kms.1` + week$`total kms.2`)/2)
+
+ac_7_21[is.infinite(ac_7_21)] <- NA
+```
+
+
+```{r}
+week$ac_7_21 <- ac_7_21
+p <- week %>%
+  ggplot(aes(x = ac_7_21)) +
+  geom_density(aes( fill = factor(injury)), alpha = 0.3) +
+  scale_fill_manual(values = c("red2", "green")) +
+  labs(title = "Bar Chart and Density Plot of Average Exertion by Injury Status",
+       x = "Date", y = "Density", fill = "Injury Status") +
+  xlim(0,3)
+p
+```
+
+
+## Derived Variables 
+
+```{r}
+ae_7_21 <- week$`avg exertion`/((week$`avg exertion.1` + week$`avg exertion.2`)/2)
+ae_7_21[is.infinite(ae_7_21)] <- NA
+
+
+exer_v_rec_7_21 <- week$`max exertion`/((week$`avg recovery.1`+ week$`avg recovery.2`)/2) ## Exertion 0 / recovery 1 over 3 weeks 
+exer_v_rec_7_21[is.infinite(exer_v_rec_7_21)] <- NA
+
+er_7_21 <- week$`avg exertion`/((week$`avg recovery.1` + week$`avg recovery.2`)/2)
+er_7_21[is.infinite(er_7_21)] <- NA
+
+rec_maxexer_7_21<- week$`avg recovery`/((week$`max exertion.1` + week$`max exertion.2`)/2)
+rec_maxexer_7_21[is.infinite(rec_maxexer_7_21)] <- NA
+
+
+
+
+week$ae_7_21 <- ae_7_21
+threshold <- 2.25
+week$ae_7_21 <- ifelse(week$ae_7_21 > threshold, mean(week$ae_7_21), week$ae_7_21)
+summary(week$ae_7_21)
+
+week$exer_v_rec_7_21 <- exer_v_rec_7_21 
+threshold <- 2.25
+week$exer_v_rec_7_21 <- ifelse(week$exer_v_rec_7_21 > threshold, mean(week$exer_v_rec_7_21), week$exer_v_rec_7_21)
+summary(week$exer_v_rec_7_21)
+
+week$er_7_21 <- er_7_21
+threshold <- 2.25
+week$er_7_21 <- ifelse(week$er_7_21 > threshold, mean(week$er_7_21), week$er_7_21)
+summary(week$er_7_21)
+
+week$rec_maxexer_7_21 <- rec_maxexer_7_21
+threshold <- 2.25
+week$rec_maxexer_7_21 <- ifelse(week$rec_maxexer_7_21 > threshold, mean(week$rec_maxexer_7_21), week$rec_maxexer_7_21)
+summary(week$rec_maxexer_7_21)
+
+
+```
+
+
+```{r}
+model <- week[,c(1:3, 12:14, 16, 17, 20, 68, 73:76)]
+model <- na.omit(model)
+
+full_model <- glm(injury ~ ., data = model, family = binomial())
+summary(full_model)
+step_model <- stepAIC(full_model, direction = "forward", scope = list(lower = ~1, upper = ~.), trace = FALSE)
+summary(step_model)
+```
+
+
+### New Analysis 
+## Lets investigate injuries as a part of our data set 
+Looks as if our current percentage of injuries as opposed to training days is 1.42 %
+```{r}
+training_days <- sum(week$`nr. sessions` > 0)
+sum(as.numeric(week$injury)) / training_days
+summary(as.factor(week$injury))
+```
+
+```{r}
+athlete <- week %>%
+  group_by(`Athlete ID`) %>%
+  summarise(Injuries = sum(as.numeric(injury))) %>%
+  arrange(desc(Injuries)) %>%
+  head(10)
+athlete
+
+```
+
+```{r}
+Injury_Plot <- ggplot(athlete, mapping = aes(x = Injuries)) +
+  geom_density(alpha=0.5, fill="maroon") +
+  labs(x = "Total Injuries",  
+       title = "Distribution of Injuries among Athletes")
+Injury_Plot
+```
+
+## Lets focus on the most injured athlete
+```{r}
+athlete1 <- week[week$`Athlete ID` == "26",]
+
+# Create plot
+Athlete_Workloads <- ggplot(athlete1, # Set data
+              aes(x = `Date`, y = `avg exertion`, color = factor(injury))) + # Set aesthetics
+  geom_point(alpha = 0.5) + # Set geom_point for scatter plot
+  labs(x = "Days",  # Set labels
+       title = "Athlete 26 Injuries",
+       fill = "Injuries") +
+  theme_bw() +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) +  # Remove grid 
+  scale_color_manual(values = c("0" = "blue", "1" = "red"), # Set color values
+                     labels = c("0" = "Healthy", "1" = "Injured"))
+
+# Generate graph
+ggMarginal(Athlete_Workloads , groupFill = TRUE,
+           type = "histogram")
+```
+
+```{r}
+pivotdat <- pivot_longer(athlete1[, c("min recovery", "avg recovery", "max recovery", "min exertion", "avg exertion", "max exertion", "min training success", "avg training success", "max training success", "Athlete ID", "injury")],
+                       !c("Athlete ID", "injury")) # Set variables to use as ID
+pivotdatall <- pivot_longer(week[, c("min recovery", "avg recovery", "max recovery", "min exertion", "avg exertion", "max exertion", "min training success", "avg training success", "max training success", "Athlete ID", "injury")],
+                       !c("Athlete ID", "injury")) # Set variables to use as ID
+```
+
+```{r}
+g <- ggplot(pivotdat,
+              aes(x = value, fill = factor(injury))) + # Set aesthetics
+  geom_density(alpha = 0.3) + # Set geom density for density plot
+  labs(x = "Percieved Metric Values",  # Set labels
+       title = "Injuries v Percieved Metric Values Leading Up to Injury",
+       fill = "injury") +
+  facet_wrap(~name, scale = "free") +
+  theme_bw() + # Set theme
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+   scale_fill_manual(values = c("0" = "blue", "1" = "red"), # Set color values
+                     labels = c("0" = "Healthy", "1" = "Injury"))
+
+# Generate graph
+g
+
+gall <- ggplot(pivotdatall,
+              aes(x = value, fill = factor(injury))) + # Set aesthetics
+  geom_density(alpha = 0.3) + # Set geom density for density plot
+  labs(x = "Percieved Metric Values",  # Set labels
+       title = "Injuries v Percieved Metric Values Leading Up to Injury",
+       fill = "injury") +
+  facet_wrap(~name, scale = "free") +
+  theme_bw() + # Set theme
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+   scale_fill_manual(values = c("0" = "blue", "1" = "red"), # Set color values
+                     labels = c("0" = "Healthy", "1" = "Injury"))
+
+# Generate graph
+gall
+```
+
+## Athlete ID 26 Week before injury
+```{r}
+# Lets select top 10 most injured athletes to see if there are any outstanding similarities
+athletes <- week[week$`Athlete ID` %in% athlete$`Athlete ID`,]
+# Create graph
+athlete_ex <- ggplot(athlete1, # Set data
+              aes(x = `avg recovery.1`, y = `max exertion` , color = factor(injury))) + # Set aesthetics
+  geom_point(alpha = 0.3) + # Set geom point for scatter plot
+  labs(x = "Avg Recovery week before Injury",  # Set labels
+       y = "Max Exertion week of Injury",
+       title = "Max Exertion versus Average Recovery before injury",
+       fill = "injury") +
+  theme_bw() + # Set theme
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+   scale_color_manual(values = c("0" = "blue", "1" = "red"), # Set color values
+                     labels = c("0" = "Healthy", "1" = "Injury"))
+
+# Generate graph
+ggMarginal(athlete_ex, groupFill = TRUE)
+```
+
+```{r}
+
+# Create graph
+week_ex <- ggplot(week, # Set data
+              aes(x = `avg recovery.1`, y = `max exertion`,color = factor(injury))) + # Set aesthetics
+  geom_point(alpha = 0.3) + # Set geom point for scatter plot
+  labs(x = "Avg Recovery week before Injury",  # Set labels
+       y = "Max Exertion week of Injury",
+       title = "Max Exertion versus Average Recovery before injury",
+       fill = "injury") +
+  theme_bw() + # Set theme
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+   scale_color_manual(values = c("0" = "blue", "1" = "red"), # Set color values
+                     labels = c("0" = "Healthy", "1" = "Injury"))
+# Generate graph
+ggMarginal(week_ex, groupFill = TRUE)
+```
+
+
+```{r}
+set.seed(42069) # Set seed for reproducibility
+trainIndex <- createDataPartition(y = week$injury, p = 0.75, list = FALSE)
+trainData <- week[trainIndex, ]
+testData <- week[-trainIndex, ]
+validData <- week[week$injury==1,]
+# c(1:4,6, 12:22, 73:76)
+# Create training data
+dtrain_1 <- xgb.DMatrix(data = as.matrix(trainData[,c(1:4,6, 12:22, 36:44, 58:66, 74:77)]), label = ((trainData$injury)))
+# Create test data
+dtest_1 <- xgb.DMatrix(data = as.matrix(testData[,c(1:4,6, 12:22, 36:44, 58:66, 74:77)]), label = ((testData$injury)))
+```
+
+```{r}
+fit_1 <- xgboost(dtrain_1,  # Set data set to use
+                 nrounds = 200, # Set number of rounds
+               eta = 0.05 , 
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error")
+```
+
+```{r}
+preds_injury <- predict(fit_1, dtest_1)
+roc1 = roc((testData$injury), preds_injury)
+plot.roc(roc1, print.auc = TRUE, col = "red", print.auc.col = "red")
+```
+
+
+```{r}
+pred_class <- rep(0, length(preds_injury))
+
+# If predicted probability above cutoff set as 1
+pred_class[which(preds_injury > 0.0145)] <- 1
+```
+
+```{r echo=FALSE}
+
+confusionMatrix(data = as.factor(pred_class), # Set predicted values
+                reference =as.factor(testData$injury)) # Set true values
+```
+
+```{r}  
+shap_result_1 <- shap.score.rank(xgb_model = fit_1, 
+                X_train = as.matrix(trainData[,c(1:4,6, 12:22, 36:44, 58:66, 74:77)]),
+                shap_approx = F)
+```
+
+```{r}
+shap_long_1 = shap.prep(shap = shap_result_1,
+                           X_train =  as.matrix(trainData[,c(1:4,6, 12:22, 36:44, 58:66, 74:77)]), 
+                           top_n = 8)
+```
+
+```{r}
+plot.shap.summary(data_long = shap_long_1)
+```
+
+
+## Future Steps Could possibly redo study to focus on the injuries of the top 10 most injured runners to see if they have any signficant metrics that lead to injury. 
+
+```{r}
+athletes <- week[week$`Athlete ID` %in% athlete$`Athlete ID`,]
+```
+
